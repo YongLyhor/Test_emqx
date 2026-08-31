@@ -1,0 +1,110 @@
+services:
+  # EMQX MQTT Broker
+  emqx:
+    image: emqx/emqx:latest
+    container_name: emqx_broker
+    ports:
+      - "1883:1883"      # MQTT
+      - "8083:8083"      # MQTT WebSocket
+      - "8084:8084"      # MQTT WebSocket SSL
+      - "18083:18083"    # Dashboard
+    environment:
+      - EMQX_NAME=emqx
+      - EMQX_HOST=127.0.0.1
+      - EMQX_DASHBOARD__DEFAULT_USERNAME=admin
+      - EMQX_DASHBOARD__DEFAULT_PASSWORD=public
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - emqx_log:/opt/emqx/log
+    networks:
+      - iot_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18083/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # TimescaleDB (PostgreSQL + TimescaleDB Extension)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: timescaledb
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin123
+      - POSTGRES_DB=iot_platform
+      - TIMESCALEDB_TELEMETRY=off
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    networks:
+      - iot_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d iot_platform"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # pgAdmin for timescaledb management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    ports:
+      - "5055:80"        
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@iot.com
+      - PGADMIN_DEFAULT_PASSWORD=admin123
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - iot_network
+    restart: unless-stopped
+    depends_on:
+      - timescaledb
+    healthcheck:
+      test: ["CMD", "wget", "-O", "-", "http://localhost:80/misc/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Python API Service 
+  api:
+    build: .
+    container_name: iot_api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app                   
+      - DATABASE_URL=postgresql://admin:admin123@timescaledb:5432/iot_platform
+      - MQTT_BROKER_HOST=emqx
+      - MQTT_BROKER_PORT=1883
+      - ENVIRONMENT=development
+    volumes:
+      - ./app:/app/app                     # Mount app code
+      - ./migration:/app/migration         # Mount migrations
+      - ./logs:/app/logs                   # Mount logs
+      - ./alembic.ini:/app/alembic.ini     # Mount alembic config
+    working_dir: /app                     
+    depends_on:
+      timescaledb:
+        condition: service_healthy         
+      emqx:
+        condition: service_healthy        
+    networks:
+      - iot_network
+    restart: unless-stopped
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+networks:
+  iot_network:
+    driver: bridge
+
+volumes:
+  emqx_data:
+  emqx_log:
+  timescaledb_data:
+  pgadmin_data:
