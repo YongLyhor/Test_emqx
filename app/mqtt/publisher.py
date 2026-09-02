@@ -6,7 +6,7 @@ from datetime import datetime
 
 class MQTTPublisher:
     """MQTT publisher for sending commands and configuration"""
-    
+
     def __init__(self, mqtt_client: MQTTClient):
         self.client = mqtt_client
     
